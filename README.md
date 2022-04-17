@@ -1,4 +1,4 @@
-# DQ R-Project 12: Analyzing Forest Fires
+# DQ R-Project 12: Building a Spam Filter
 This is my twelveth project in Dataquest towards my journey in R Programming. This project aims to build an algorithm that would filter out spam from SMS messages. Specifically we'll be using the Naive Bayes algorithm from a previously classified dataset to predict the probability of classification and actually classifying an SMS message whether it's spam or not. In this project, the following concepts are used to achieve the given problem:
 - Conditional Probability
 - Bayes Theorem
