@@ -1,0 +1,382 @@
+---
+title: "Building a Spam Filter"
+author: "Abe Ceasar Perez"
+date: "April 14, 2022"
+output: html_document
+---
+
+### Implementing Naive Bayes on a Spam Filter
+
+This project aims to build an algorithm that would filter out spam from SMS messages. Specifically we'll be using the Naive Bayes algorithm from a previously classified dataset to predict the probability of classification and actually classifying an SMS message whether it's spam or not.
+
+In addition to the objectives above, we'll be applying the following concepts in this project:
+
+- Conditional Probability
+- Bayes Theorem
+- Naive Bayes Algorithm
+
+### Loading the Dataset
+
+The dataset that we'll be loading is authored by Tiago A. Almeida and Jose Maria Gomez Hidalgo which can be downloaded in The UCI Machine Learning Repository. For this project, however, we'll only be using the modified dataset which is linked here: <https://dq-content.s3.amazonaws.com/475/spam.csv>
+
+```{r load_data, echo=TRUE, warning=FALSE}
+
+set.seed(1)
+
+suppressPackageStartupMessages(library(tidyverse)) # loads the packages without warnings
+
+df <- read_csv("spam.csv", show_col_types = FALSE) # loads the dataset without showing the columns 
+head(df) # displays the first few rows
+
+```
+
+Based on the initial inspection of the dataset, there are exactly 1,000 messages that we'll be using for classifying and testing the model and 2 variables - one for the classification of the text and another for the actual message itself.
+
+```{r inspect_data, echo=TRUE, warning=FALSE}
+
+dim(df) # checks the number of rows and columns
+
+```
+
+Next, we'll be checking how many of the messages are spam and how many are non-spam. We've determined that there are 150 spam messages and 850 non-spam messages.
+
+```{r inspect_sms_type, echo=TRUE, warning=FALSE}
+
+responses <- df$label # stores all labels into a vector
+table(responses) # counts the number of spam/not spam messages
+
+```
+
+### Creating the datasets
+
+For the project to be successful, the goal must align towards maximizing the predictive ability of the model or in context of the problem, enhance the ability of the model to correctly classify new messages. 
+
+In order to do so, we'll be creating the datasets listed below based on our loaded dataset:
+
+- A training set, which we'll use to "train" the computer how to classify messages.
+- A cross-validation set, which we'll use to assess how different choices of alpha affect the prediction accuracy
+- A test set, which we'll use to test how good the spam filter is with classifying new messages.
+
+For the purposes of this project, we'll be creating proportional samples per label to ensure lower bias in our classification. We'll first start by sampling the indeces of the message starting with spam messages
+
+```{r spam_indeces, echo=TRUE, warning=FALSE}
+
+# gets the spam message indeces to sample the dataset
+spam_indeces <- which(responses == "spam") 
+
+# generates random samples for 80% of the sampled indeces
+train_spam <- sample(spam_indeces,
+                     length(spam_indeces)*0.8) 
+
+# filters out the remaining 20% of the spam indeces as the test/cv indeces
+init_spam_test <- spam_indeces[!(spam_indeces %in% train_spam)] 
+
+# generates random samples from the remaining 10% of the sampled indeces
+cv_spam <- sample(init_spam_test, 15) 
+
+# separates the remaining 10% of the left indeces as the test data indeces
+test_spam <- init_spam_test[!(init_spam_test %in% cv_spam)] 
+
+```
+
+We'll also be doing the same procedure above for non-spam messages:
+
+```{r non_spam_indeces, echo=TRUE, warning=FALSE}
+
+# gets the non-spam message indeces to sample the dataset
+ham_indeces <- which(responses == "ham") 
+
+# generates random samples for 80% of the sampled indeces
+train_ham <- sample(ham_indeces,
+                    length(ham_indeces)*0.8) 
+
+# filters out the remaining 20% of the non-spam indeces as the test/cv indeces
+init_ham_test <- ham_indeces[!(ham_indeces %in% train_ham)] 
+
+# generates random samples from the remaining 10% of the sampled indeces
+cv_ham <- sample(init_ham_test, 85) 
+
+# separates the remaining 10% of the left indeces as the test data indeces
+test_ham <- init_ham_test[!(init_ham_test %in%
+                              cv_ham)] 
+
+```
+
+And lastly, we'll be using the generated indeces above to create our datasets. We'll also confirm if the proportion of spam and non-spam messages are appropriate for each of the dataset (which is confirmed to be true).
+
+```{r created_datasets, echo=TRUE, warning=FALSE}
+
+# combines the non-spam and spam training indeces to generate the train dataset
+train_df <- df[c(train_ham, train_spam),] 
+
+# combines the non-spam and spam cross validation indeces to generate the cross validation dataset
+cv_df <- df[c(cv_ham, cv_spam),] 
+
+# combines the non-spam and spam test indeces to generate the test dataset
+test_df <- df[c(test_ham, test_spam),] 
+
+# checks the proportion of spam and non-spam messages for each dataset created
+prop.table(table(train_df$label))
+prop.table(table(cv_df$label))
+prop.table(table(test_df$label))
+
+```
+
+### Cleaning the Data
+
+Since we'll be calculating probabilities for each message, we want to make sure that each word is cleaned and easily recognizable for the algorithm to work. We'll first start by creating a function that would perform the data cleaning for each dataset:
+
+```{r clean_sms, echo=TRUE, warning=FALSE}
+
+message_cleaner <- function(messages){
+  
+  # removes tab spaces and new lines
+  messages <- str_remove_all(messages, "\n|\t") 
+  
+  # removes punctation marks
+  messages <- str_replace_all(messages, "[:punct:]", "") 
+  
+  # removes numbers/digits
+  messages <- str_replace_all(messages, "[:digit:]", "") 
+  
+  # removes special characters which are not punctuation marks
+  messages <- str_replace_all(messages, "[+||||£|$|~|=]", "")
+  
+   # changes message to lower case
+  messages <- str_to_lower(messages)
+  
+  # removes additional spaces in-between words 
+  messages <- str_squish(messages) 
+  messages
+  
+}
+
+```
+
+We'll then apply this function to each of our datasets to finally clean our sms messages.
+
+```{r apply_cleaning, echo=TRUE, warning=FALSE}
+
+# cleans the messages for each created dataset
+train_df$sms <- message_cleaner(train_df$sms)
+cv_df$sms <- message_cleaner(cv_df$sms)
+test_df$sms <- message_cleaner(test_df$sms)
+
+head(train_df)
+
+```
+
+### Creating a Vocabulary from the Training Set
+
+Next, we'll be creating a vocabulary from the training dataset to store our frequency counts for both labels for calculating the probabilities. We'll first create a function to further filter out all valid English words found in each of the datasets that we've created for our vocabulary:
+
+```{r create_vocab, echo=TRUE, warning=FALSE}
+
+# loads the package to extract all possible english words from the Scrabble game
+suppressPackageStartupMessages(library(words)) 
+
+df_words <- words # creates a dataframe from the loaded dataset
+word_checker <- function(x){
+  if(x == "") # checks if the message is empty or not
+    x
+  else{
+    # splits text by spaces
+    word_vector <- unlist(str_split(x, pattern=" ")) 
+    
+    # stores invalid words in a different vector
+    invalid_words <- word_vector[word_vector %in% df_words$word == FALSE] 
+    
+  if(length(invalid_words) > 0){ # checks whether there are invalid words in the vector
+    x <- word_vector[match(invalid_words, word_vector)*-1] # removes all invalid words from the vector
+    x <- paste(x, collapse = " ") # combines the vector again by spaces after the removal of invalid words
+  }
+  else
+    x
+  }
+}
+
+train_df$sms <- unlist(map(train_df$sms, word_checker))
+cv_df$sms <- unlist(map(cv_df$sms, word_checker)) # cleans the dataset as well for better testing later
+test_df$sms <- unlist(map(test_df$sms, word_checker)) # cleans the dataset as well for better testing later
+
+```
+
+From here, we'll be creating a vocabulary from the training dataset in order to calculate the probabilities later.
+
+```{r apply_vocab, echo=TRUE, warning=FALSE}
+
+# extracts all unique words from the training set and sorts it alphabetically
+vocabulary <- sort(unique(unlist(map(train_df$sms, function(x) str_split(x, pattern=" "))))) 
+
+# considers only words that contain two letters or more
+vocabulary <- vocabulary[str_length(vocabulary) > 1] 
+head(vocabulary)
+
+```
+
+### Building the Naive Bayes Algorithm
+
+Now that we have our cleaned messages and vocabulary, we can proceed with calculating the probabilities for each message. In order for the Naive Bayes algorithm to work, we need the following:
+
+- Total number of words in spam messages, non-spam messages, and vocabulary
+- Smoothing parameter
+- Marginal probabilities
+- Word count per class
+
+We'll start first by generating the word counts for spam, non-spam and vocabulary words as well as declaring a smoothing parameter:
+
+```{r marginal_counts, echo=TRUE, warning=FALSE}
+
+# split the cleaned dataset into spam and non-spam
+train_df_ham <- subset(train_df, label=="ham")
+train_df_spam <- subset(train_df, label=="spam")
+
+# extracts the words in all of the spam messages
+Nspam <- length(unlist(map(train_df_spam$sms, function(x) str_split(x, pattern=" ")))) 
+
+# extracts the words in all of the non-spam messages
+Nham <- length(unlist(map(train_df_ham$sms, function(x) str_split(x, pattern=" ")))) 
+
+# total number of words in the vocabulary
+Nvocabulary <- length(vocabulary) 
+
+# smoothing parameter to account for the non-occurrence of words
+alpha <- 1 
+
+# Print counts
+print(paste("Total number of spam words: ", Nspam, sep=""))
+print(paste("Total number of non-spam words: ", Nham, sep=""))
+print(paste("Total number of vocabulary words: ", Nvocabulary, sep=""))
+
+```
+
+Next, we'll calculate the marginal probabilities of a message being spam or not spam based on the training dataset.
+
+```{r probability_per_class, echo=TRUE, warning=FALSE}
+
+# proportion of spam messages
+p_spam <- nrow(train_df_spam)/nrow(train_df) 
+
+# proportion of non-spam messages
+p_ham <- nrow(train_df_ham)/nrow(train_df) 
+
+print(paste("Probability of a spam message: ", p_spam, sep=""))
+print(paste("Probability of a non-spam message: ", p_ham, sep=""))
+
+```
+
+Lastly, we'll be counting the number of occurrences for every possible word for each class or i.e. how many times a word is present in a spam and a non-spam message. The process is illustrated below:
+
+```{r count_per_class, echo=TRUE, warning=FALSE}
+
+count_occurrences <- function(vect){ # function for counting occurrences
+  
+  # splits the vector (spam or non-spam by spaces)
+  split_text <-  unlist(map(vect, function(sms) str_split(sms, pattern=" "))) 
+  
+  # maps each word in the vocabulary and counts how many time
+  word_counts <- unlist(map(vocabulary, function(word) sum(split_text == word))) 
+  word_counts
+}
+
+spam_occurrences <- count_occurrences(train_df_spam$sms) 
+ham_occurrences <- count_occurrences(train_df_ham$sms)
+
+# combines all occurrences into a vocabulary
+vocabulary_occurrences <- tibble(vocabulary, spam_occurrences, ham_occurrences) 
+
+head(vocabulary_occurrences) # displays the first five rows
+
+```
+
+Now that we have all the parameters needed, we can now create our classifier that takes in an sms message and outputs a class based on the created algorithm below:
+
+```{r naive_bayes_algorithm, echo=TRUE, warning=FALSE}
+
+spam_ham_classifier <- function(sentence, alpha){ # function for classifying a message with a smoothing parameter
+  # splits text
+  word_vector <- unique(unlist(str_split(sentence, pattern=" "))) 
+  
+  # maps the indeces of the split text in the vocabulary
+  vocabulary_indeces <- match(word_vector, vocabulary_occurrences$vocabulary) 
+  
+  # uses the mapped vocabulary indeces to obtain the frequency of the words in a spam message and calculates the probability
+  p_words_given_spam <- unlist(map(vocabulary_indeces, function(word_i) (vocabulary_occurrences$spam_occurrences[word_i] + alpha) / (Nspam + alpha * Nvocabulary))) 
+  
+  # uses the mapped vocabulary indeces to obtain the frequency of the words in a non-spam message and calculates the probability
+  p_words_given_ham <- unlist(map(vocabulary_indeces, function(word_i) (vocabulary_occurrences$ham_occurrences[word_i] + alpha) / (Nham + alpha * Nvocabulary))) 
+  
+  # calculates the final probability of the message being spam
+  p_spam_given_words <- p_spam * prod(p_words_given_spam, na.rm = TRUE) 
+  
+  # calculates the final probability of the message being non-spam
+  p_ham_given_words <- p_ham * prod(p_words_given_ham, na.rm=TRUE) 
+  
+  if(p_spam_given_words > p_ham_given_words) # compares which probability is larger and returns the final classification
+    return("spam")
+  else
+    return("ham")
+  
+}
+
+```
+
+### Testing the Created Algorithm
+
+After we have created the algorithm, we'll now start by testing it to our datasets. We'll first start by testing it to the train data itself and based on the results below, we're able to obtain a near 100% accuracy, which should be expected given that the model was trained using the train data.
+
+```{r train_accuracy, echo=TRUE, warning=FALSE}
+
+# maps the train messages in the algorithm and sets the smoothing parameter to 1
+classifier_predictions <- unlist(map2(train_df$sms, rep(1,length(train_df$sms)), spam_ham_classifier)) 
+
+# combines the actual classes to the predictions made by the algorithm
+updated_train_df <- data.frame(cbind(train_df, classifier_predictions)) 
+
+colnames(updated_train_df)[c(1,3)] <- c("actual","predicted") # renames the columns
+table(updated_train_df$predicted, updated_train_df$actual) # creates the confusion matrix for predicted and actual classifications
+
+correctly_classified <- sum(unlist(map(c(1,2), function(index) table(updated_train_df$predicted, updated_train_df$actual)[index,index]))) # adds the number of correctly classified messages
+total_classified <- nrow(updated_train_df)
+
+train_accuracy <- correctly_classified/total_classified # calculates the accuracy of the model
+train_accuracy
+
+```
+
+Earlier, we've arbitrarily set the smoothing parameter to 1, not knowing other values to consider in the algorithm. In order to pick out the best smoothing parameter to use, we'll be mapping a range of alphas using our cross validation set to determine the best alpha to use. 
+
+Based on the results below, the alphas that gave the highest accuracies ranged from 0.3 to 0.9. This would imply that a lower range of alphas are performing well compared to a higher range.
+
+```{r cv_accuracy, echo=TRUE, warning=FALSE}
+
+# for each alpha from 0.1 - 1, run the naive bayes algorithm across each message in the cross validation set.
+cv_predictions <- map(seq(0.1,1,0.1), function(parameter) unlist(map2(cv_df$sms, rep(parameter,length(cv_df$sms)), spam_ham_classifier))) 
+
+# calculates the accuracy of the algorithm for each alpha and stores it in a vector
+cv_accuracy <- unlist(map(cv_predictions, function(x) {sum(x == cv_df$label)/length(cv_df$label)}))  
+
+# creates a dataframe of the alphas used and the accuracies obtained.
+cv_parameter_accuracies <- tibble(alpha = seq(0.1,1,0.1), cv_accuracy) 
+cv_parameter_accuracies
+
+```
+
+Similarly, we'll also be performing this in the test data set using the process above. Based on the results below, the best smoothing parameters are 0.1 and 1 in terms of the yielded accuracy - which is a sign that 1 may be the most ideal alpha to use given the strong performance.
+
+```{r test_accuracy, echo=TRUE, warning=FALSE}
+
+# for each alpha from 0.1 - 1, run the naive bayes algorithm across each message in the test set.
+test_predictions <- map(seq(0.1,1,0.1), function(parameter) unlist(map2(test_df$sms, rep(parameter,length(test_df$sms)), spam_ham_classifier))) 
+
+# calculates the accuracy of the algorithm for each alpha and stores it in a vector
+test_accuracy <- unlist(map(test_predictions, function(x) {sum(x == test_df$label)/length(test_df$label)})) 
+
+# creates a dataframe of the alphas used and the accuracies obtained.
+test_parameter_accuracies <- tibble(alpha = seq(0.1,1,0.1), test_accuracy) 
+test_parameter_accuracies
+
+```
+
+<br>
+<br>
