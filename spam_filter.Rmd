@@ -1,7 +1,6 @@
 ---
 title: "Building a Spam Filter"
 author: "Abe Ceasar Perez"
-date: "April 14, 2022"
 output: html_document
 ---
 
@@ -9,7 +8,7 @@ output: html_document
 
 This project aims to build an algorithm that would filter out spam from SMS messages. Specifically we'll be using the Naive Bayes algorithm from a previously classified dataset to predict the probability of classification and actually classifying an SMS message whether it's spam or not.
 
-In addition to the objectives above, we'll be applying the following concepts in this project:
+For this project, the following concepts were applied in order to accomplish the objectives above:
 
 - Conditional Probability
 - Bayes Theorem
